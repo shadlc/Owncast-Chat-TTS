@@ -6,6 +6,8 @@
 
 A desktop application that reads Owncast chat messages aloud using TTS (Text-to-Speech). Supports system TTS and OpenAI TTS backends with interruptible playback.
 
+![Screenshot](https://github.com/user-attachments/assets/281a3b71-9e6a-4725-9965-c1bbf3a1e7a6)
+
 ## Features
 
 - Real-time chat monitoring via Owncast WebSocket API
