@@ -1,11 +1,10 @@
 import os
-import io
 import re
 import sys
 import json
 import asyncio
 import threading
-import wave
+import time
 import ctypes
 import subprocess
 import tkinter as tk
@@ -16,8 +15,7 @@ import winerror
 import websockets
 import win32com.client
 import requests
-import pyaudio
-from pydub import AudioSegment
+import miniaudio
 
 # ==========================================
 # Configuration
@@ -85,51 +83,42 @@ if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
 
 class AudioPlayer:
     def __init__(self):
-        self.p = pyaudio.PyAudio()
-        self.stream = None
+        self.device = miniaudio.PlaybackDevice()
         self._stop_flag = False
         self._play_thread = None
         self._lock = threading.Lock()
 
-    def play_wav(self, wav_data):
+    def play(self, mp3_data: bytes):
         with self._lock:
             self._stop()
             self._stop_flag = False
-            self._play_thread = threading.Thread(target=self._play, args=(wav_data,), daemon=True)
+            self._play_thread = threading.Thread(
+                target=self._play, args=(mp3_data,), daemon=True
+            )
             self._play_thread.start()
 
-    def _play(self, wav_data):
+    def _play(self, mp3_data: bytes):
         try:
-            with io.BytesIO(wav_data) as f:
-                with wave.open(f, 'rb') as wf:
-                    self.stream = self.p.open(format=self.p.get_format_from_width(wf.getsampwidth()),
-                                              channels=wf.getnchannels(),
-                                              rate=wf.getframerate(),
-                                              output=True)
-                    data = wf.readframes(1024)
-                    while data and not self._stop_flag:
-                        self.stream.write(data)
-                        data = wf.readframes(1024)
+            stream = miniaudio.stream_memory(mp3_data)
+            self.device.start(stream)
+
+            while not self._stop_flag:
+                time.sleep(0.1)
+
         except Exception as e:
             print(f"Playback error: {e}")
         finally:
-            if self.stream:
-                self.stream.stop_stream()
-                self.stream.close()
-                self.stream = None
+            self.device.stop()
 
     def _stop(self):
         self._stop_flag = True
+
         if self._play_thread and self._play_thread.is_alive():
             self._play_thread.join(timeout=0.5)
-        if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
-            self.stream = None
+        self.device.stop()
 
     def close(self):
         self._stop()
-        self.p.terminate()
 
 class SystemTTSEngine:
     def __init__(self, rate=1, volume=100):
@@ -191,11 +180,7 @@ class OpenAITTSEngine:
         try:
             resp = requests.post(self.url, json=payload, headers=headers, timeout=10)
             if resp.status_code == 200:
-                audio = AudioSegment.from_mp3(io.BytesIO(resp.content))
-                wav_io = io.BytesIO()
-                audio.export(wav_io, format="wav")
-                wav_io.seek(0)
-                self.player.play_wav(wav_io.read())
+                self.player.play(resp.content)
             else:
                 error_msg = f"TTS error ({resp.status_code}): {resp.text[:100]}"
                 print(error_msg)
