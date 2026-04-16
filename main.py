@@ -166,9 +166,15 @@ class OpenAITTSEngine:
         self.default_voice = default_voice
         self.url = url
         self.player = AudioPlayer()
+        self._seq = 0
+        self._seq_lock = threading.Lock()
 
-    def speak(self, text, voice=None, rate=1, error_callback=None):
+    def speak(self, text, voice=None, rate=1.5, error_callback=None):
         voice = voice or self.default_voice
+        with self._seq_lock:
+            self._seq += 1
+            current_seq = self._seq
+
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         payload = {
             "model": self.model,
@@ -177,20 +183,26 @@ class OpenAITTSEngine:
             "response_format": "mp3",
             "speed": float(rate)
         }
-        try:
-            resp = requests.post(self.url, json=payload, headers=headers, timeout=10)
-            if resp.status_code == 200:
-                self.player.play(resp.content)
-            else:
-                error_msg = f"TTS error ({resp.status_code}): {resp.text[:100]}"
+
+        def do_request():
+            try:
+                resp = requests.post(self.url, json=payload, headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    with self._seq_lock:
+                        if self._seq == current_seq:
+                            self.player.play(resp.content)
+                else:
+                    error_msg = f"TTS error ({resp.status_code}): {resp.text[:100]}"
+                    print(error_msg)
+                    if error_callback:
+                        error_callback(error_msg)
+            except Exception as e:
+                error_msg = f"OpenAI request error: {str(e)}"
                 print(error_msg)
                 if error_callback:
                     error_callback(error_msg)
-        except Exception as e:
-            error_msg = f"OpenAI request error: {str(e)}"
-            print(error_msg)
-            if error_callback:
-                error_callback(error_msg)
+
+        threading.Thread(target=do_request, daemon=True).start()
 
     def stop(self):
         self.player._stop()
@@ -213,16 +225,17 @@ class TTSManager:
             self.openai_engine = OpenAITTSEngine(oa["api_key"], oa["model"], oa["voice"], oa["url"])
 
     def speak(self, text, backend=None):
-        self.system_engine.stop()
-        if self.openai_engine:
-            self.openai_engine.stop()
         if backend:
             self.current_backend = backend
         if self.current_backend == "openai" and self.openai_engine:
+            self.system_engine.stop()
             voice = self.config["openai"]["voice"]
             tts_rate = self.config["tts_rate"]
             self.openai_engine.speak(text, voice, tts_rate, error_callback=self.error_callback)
         else:
+            self.system_engine.stop()
+            if self.openai_engine:
+                self.openai_engine.stop()
             self.system_engine.speak(text)
 
     def update_config(self, new_config):
@@ -248,7 +261,7 @@ class SettingsWindow:
         self.tts_manager = tts_manager
         self.window = tk.Toplevel(parent)
         self.window.title("Settings")
-        self.window.geometry("600x600")
+        self.window.geometry("600x560")
         self.window.transient(parent)
         self.window.grab_set()
         self._center_window()
@@ -256,7 +269,7 @@ class SettingsWindow:
         self.ws_uri_var = tk.StringVar(value=config["ws_uri"])
         self.max_history_var = tk.IntVar(value=config["max_history_lines"])
         self.tts_backend_var = tk.StringVar(value=config["tts_backend"])
-        self.tts_rate_var = tk.StringVar(value=config["tts_rate"])
+        self.tts_rate_var = tk.StringVar(value=str(config["tts_rate"]))
         self.tts_volume_var = tk.IntVar(value=config["tts_volume"])
 
         self.oa_api_key_var = tk.StringVar(value=config["openai"]["api_key"])
@@ -274,7 +287,7 @@ class SettingsWindow:
         widget.grid(row=row, column=1, sticky="ew", padx=widget_padx, pady=pady)
         parent.columnconfigure(1, weight=1)
 
-    def _create_scale_row(self, parent, row: int, text: str, var: tk.IntVar,
+    def _create_scale_row(self, parent, row: int, text: str, var: tk.StringVar,
                           from_: float, to: float, step: float):
         precision = len(str(step).split('.')[1]) if '.' in str(step) else 0
 
@@ -331,11 +344,6 @@ class SettingsWindow:
         row = 0
         self._add_row(self.window, "Owncast WS URL:",
                       ttk.Entry(self.window, textvariable=self.ws_uri_var, width=60), row)
-        row += 1
-
-        self._add_row(self.window, "Max history lines:",
-                      ttk.Scale(self.window, from_=10, to=1000, orient=tk.HORIZONTAL,
-                                variable=self.max_history_var), row)
         row += 1
 
         self._add_row(self.window, "TTS backend:",
